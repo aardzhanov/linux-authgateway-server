@@ -24,11 +24,12 @@ typedef struct sock_stat_struc
         sockstat;
 
 typedef sockstat * psockstat;
+typedef psockstat * ind_psockstat;
 
 /**************************************************************************************************
 * Конец Определяем свои типы
 **************************************************************************************************/
 void daemonize(void);
-void update_socket_status (psockstat *, int);
-int set_socket_status (psockstat *, int, statenum, fd_set *, char *, int);
+void update_socket_status (ind_psockstat *, int);
+int set_socket_status (ind_psockstat *, int, statenum, fd_set *, char *, int);
 int main(void);

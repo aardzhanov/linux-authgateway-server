@@ -602,7 +602,7 @@ rad_init_send_request(struct rad_handle *h, int *fd, struct timeval *tv)
 		sin.sin_len = sizeof sin;
 #endif
 		sin.sin_family = AF_INET;
-		sin.sin_addr.s_addr = inet_addr("172.17.127.5");  // Это мое изменение, которое необходимо вынести в конфиг
+		sin.sin_addr.s_addr = INADDR_ANY;
 		sin.sin_port = htons(0);
 		if (bind(h->fd, (const struct sockaddr *)&sin,
 		    sizeof sin) == -1) {

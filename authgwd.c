@@ -100,7 +100,7 @@ void daemonize(void)
 /**************************************************************************************************
 * Функция установки статуса на сокет
 **************************************************************************************************/
-int set_socket_status (psockstat * arr_st, int sockdescr, statenum mystatus, fd_set * mysockfd, char * user, int acclvl)
+int set_socket_status (ind_psockstat * arr_st, int sockdescr, statenum mystatus, fd_set * mysockfd, char * user, int acclvl)
 {
  char * dynrule;
  struct linger sclsmethod;
@@ -116,7 +116,7 @@ int set_socket_status (psockstat * arr_st, int sockdescr, statenum mystatus, fd_
             setsockopt(sockdescr, SOL_SOCKET, SO_LINGER, &sclsmethod, sizeof(sclsmethod));
             clsstat=close(sockdescr);
             FD_CLR(sockdescr, &(*mysockfd));
-            if ((*arr_st)[sockdescr].status==authed)
+            if ((*arr_st)[sockdescr]->status==authed)
                {
                 dynrule = malloc(250);
                 if(!dynrule) 
@@ -124,26 +124,29 @@ int set_socket_status (psockstat * arr_st, int sockdescr, statenum mystatus, fd_
                    syslog(LOG_ERR, "Command variable allocation error");
                   }
                 memset(dynrule, '\0', 250);
-                sprintf(dynrule, "%s %s %i %s %i", stopscript, inet_ntoa((*arr_st)[sockdescr].clentaddr), sockdescr, (*arr_st)[sockdescr].sockuser, (*arr_st)[sockdescr].accesslvl);
+                sprintf(dynrule, "%s %s %i %s %i", stopscript, inet_ntoa((*arr_st)[sockdescr]->clentaddr), sockdescr, (*arr_st)[sockdescr]->sockuser, (*arr_st)[sockdescr]->accesslvl);
                 system(dynrule);
                 free(dynrule);
-                if (log_verbose>0) syslog(LOG_DEBUG, "User %s from %s on socket %d with level %d close connection with status %d", (*arr_st)[sockdescr].sockuser, inet_ntoa((*arr_st)[sockdescr].clentaddr), sockdescr, (*arr_st)[sockdescr].accesslvl,clsstat);
-                free((*arr_st)[sockdescr].sockuser);
+                if (log_verbose>0) syslog(LOG_INFO, "User %s from %s on socket %d with level %d close connection with status %d", (*arr_st)[sockdescr]->sockuser, inet_ntoa((*arr_st)[sockdescr]->clentaddr), sockdescr, (*arr_st)[sockdescr]->accesslvl, clsstat);
+                free((*arr_st)[sockdescr]->sockuser);
                }
             else
                {
-                if (log_verbose>0) syslog(LOG_DEBUG, "User from %s on socket %d close connection with status %d", inet_ntoa((*arr_st)[sockdescr].clentaddr), sockdescr, clsstat);
+                if (log_verbose>0) syslog(LOG_INFO, "User from %s on socket %d close connection with status %d", inet_ntoa((*arr_st)[sockdescr]->clentaddr), sockdescr, clsstat);
                }
-            (*arr_st)[sockdescr].status=closed;
-            (*arr_st)[sockdescr].clentaddr.s_addr=0;
-            (*arr_st)[sockdescr].accesslvl=0;
+            (*arr_st)[sockdescr]->status=closed;
+            (*arr_st)[sockdescr]->clentaddr.s_addr=0;
+            (*arr_st)[sockdescr]->accesslvl=0;
+            free ((*arr_st)[sockdescr]);
+            (*arr_st)[sockdescr]=NULL;
             break;
        case opened:
-            (*arr_st)[sockdescr].status=mystatus;
-            (*arr_st)[sockdescr].last_ans=time((time_t *)NULL);
+            (*arr_st)[sockdescr]=calloc(1, sizeof(sockstat));
+            (*arr_st)[sockdescr]->status=mystatus;
+            (*arr_st)[sockdescr]->last_ans=time((time_t *)NULL);
             len = sizeof(rmtaddr);
             getpeername(sockdescr, (struct sockaddr*)&rmtaddr, &len);
-            (*arr_st)[sockdescr].clentaddr=rmtaddr.sin_addr;
+            (*arr_st)[sockdescr]->clentaddr=rmtaddr.sin_addr;
             break;
        case authed:
             dynrule = malloc(250);
@@ -152,18 +155,19 @@ int set_socket_status (psockstat * arr_st, int sockdescr, statenum mystatus, fd_
                syslog(LOG_ERR, "Command variable allocation error");
               }
             memset(dynrule, '\0', 250);
-            sprintf(dynrule, "%s %s %i %s %i", startscript, inet_ntoa((*arr_st)[sockdescr].clentaddr), sockdescr, user, acclvl);
+            sprintf(dynrule, "%s %s %i %s %i", startscript, inet_ntoa((*arr_st)[sockdescr]->clentaddr), sockdescr, user, acclvl);
             system(dynrule);
             free(dynrule);
-            (*arr_st)[sockdescr].sockuser=calloc(1, strlen(user)+1);
-            strncpy((*arr_st)[sockdescr].sockuser, user, strlen(user));
-            (*arr_st)[sockdescr].status=mystatus;
-            (*arr_st)[sockdescr].last_ans=time((time_t *)NULL);
-            (*arr_st)[sockdescr].accesslvl=acclvl;
+            (*arr_st)[sockdescr]->sockuser=calloc(1, strlen(user)+1);
+            strncpy((*arr_st)[sockdescr]->sockuser, user, strlen(user));
+            (*arr_st)[sockdescr]->status=mystatus;
+            (*arr_st)[sockdescr]->last_ans=time((time_t *)NULL);
+            (*arr_st)[sockdescr]->accesslvl=acclvl;
             break;
        case listened:
-            (*arr_st)[sockdescr].status=mystatus;
-            (*arr_st)[sockdescr].last_ans=time((time_t *)NULL);
+            (*arr_st)[sockdescr]=calloc(1, sizeof(sockstat));
+            (*arr_st)[sockdescr]->status=mystatus;
+            (*arr_st)[sockdescr]->last_ans=time((time_t *)NULL);
             break;
        }
  
@@ -179,10 +183,10 @@ int set_socket_status (psockstat * arr_st, int sockdescr, statenum mystatus, fd_
 /**************************************************************************************************
 * Функция Обновления времени сокета
 **************************************************************************************************/
-void update_socket_status (psockstat * arr_st, int sockdescr)
+void update_socket_status (ind_psockstat * arr_st, int sockdescr)
 {
 
- (*arr_st)[sockdescr].last_ans=time((time_t *)NULL);
+ (*arr_st)[sockdescr]->last_ans=time((time_t *)NULL);
 
 }
 /**************************************************************************************************
@@ -208,7 +212,7 @@ int main(void)
  socklen_t                 addrlen;                               
  int                       i;                                     
  int                       k;                                     // Переменная для цикла обхода сокетов
- psockstat                 status_array;                          // Ссылка на массив состояний сокета
+ ind_psockstat             status_array;                          // Ссылка на массив состояний сокета
  int                       currsock             = 0;
  struct timeval            tv;
  int                       selectstatus;
@@ -328,7 +332,7 @@ int main(void)
  myaddr.sin_addr.s_addr = inet_addr(bindaddr);
  myaddr.sin_port = htons(port);
  memset(&(myaddr.sin_zero), '\0', 8);
- syslog(LOG_INFO, "Binding on %s:%i",inet_ntoa(myaddr.sin_addr), port);
+ if (log_verbose>0) syslog(LOG_INFO, "Binding on %s:%i",inet_ntoa(myaddr.sin_addr), port);
  if (bind(listener, (struct sockaddr *)&myaddr, sizeof(myaddr)) == -1) 
     {
      syslog(LOG_ERR, "Can not bind on %s:%i",inet_ntoa(myaddr.sin_addr), port);
@@ -349,7 +353,7 @@ int main(void)
  fdmax = listener; // so far, it's this one
  
  //выделяем память под динамический массив с состоянием сокетов
- status_array=calloc(fdmax+1, sizeof(sockstat));
+ status_array=calloc(fdmax+1, sizeof(psockstat));
  if (!status_array)
     {
      syslog(LOG_ERR, "Can not allocate memory for status array");
@@ -358,10 +362,7 @@ int main(void)
  //Инициализируем память массива
  for (k=0; k<=fdmax; k++)
      {
-      status_array[k].status=closed;
-      status_array[k].last_ans=time((time_t *)NULL);
-      status_array[k].clentaddr.s_addr=0;
-      status_array[k].accesslvl=0;
+      status_array[k]=NULL;
      } 
 
  set_socket_status(&status_array, listener, listened, &master, NULL, 0);
@@ -376,8 +377,9 @@ int main(void)
         } 
      while ( (fdmax>currsock) && !FD_ISSET(currsock, &master) );
   
-  if ( (difftime(time((time_t *)NULL), status_array[currsock].last_ans)>stoptimeout) && ((status_array[currsock].status==opened) || (status_array[currsock].status==authed)))
+  if ( (status_array[currsock]!=NULL) && (difftime(time((time_t *)NULL), status_array[currsock]->last_ans)>stoptimeout) && ((status_array[currsock]->status==opened) || (status_array[currsock]->status==authed)))
       {
+       if (log_verbose>0) syslog(LOG_INFO, "User from %s on socket %d reset, because he is not ALIVE", inet_ntoa(status_array[currsock]->clentaddr), currsock);
        set_socket_status(&status_array, currsock, closed, &master, NULL, 0);
       }
   
@@ -420,14 +422,11 @@ int main(void)
                           if (newfd > fdmax) // keep track of the maximum
                              {    
                               //Выделяем в своем массиве новую память
-                              status_array=realloc(status_array, (newfd+1)*sizeof(sockstat));
+                              status_array=realloc(status_array, (newfd+1)*sizeof(psockstat));
                               //Инициализируем новые элементы
                               for (k=fdmax+1; k<=newfd; k++)
                                   {
-                                   status_array[k].status=closed;
-                                   status_array[k].last_ans=time((time_t *)NULL);
-                                   status_array[k].clentaddr.s_addr=0;
-                                   status_array[k].accesslvl=0;
+                                   status_array[k]=NULL;
                                   }                          
                               fdmax = newfd;
                              }
@@ -442,9 +441,9 @@ int main(void)
                              {
                               syslog(LOG_ERR, "Can not send key to %s on socket %d", inet_ntoa(remoteaddr.sin_addr), newfd);
                              }
-                          if (log_verbose>1)
+                          if (log_verbose>0)
                              {
-                              syslog(LOG_DEBUG, "New connection from %s on socket %d", inet_ntoa(remoteaddr.sin_addr), newfd);
+                              syslog(LOG_INFO, "New connection from %s on socket %d", inet_ntoa(remoteaddr.sin_addr), newfd);
                              }
                          }
                     } 
@@ -464,7 +463,7 @@ int main(void)
                             } 
                          else 
                             {
-                             syslog(LOG_ERR, "Receive error from %s on socket %d", inet_ntoa(status_array[i].clentaddr),i);
+                             syslog(LOG_ERR, "Receive error from %s on socket %d", inet_ntoa(status_array[i]->clentaddr),i);
                             }
 
                          set_socket_status(&status_array, i, closed, &master, NULL, 0);
@@ -474,7 +473,7 @@ int main(void)
                          
                          
                         //Сокет открыт, пришел логин-пароль
-                         if (status_array[i].status==opened && strchr(&buf[0], '@')>0)
+                         if (status_array[i]->status==opened && strchr(&buf[0], '@')>0)
                             {
 
                              //Запрос корректный, парсим переменные
@@ -504,21 +503,21 @@ int main(void)
                                     syslog(LOG_DEBUG, "User: \"%s\", Password: \"%s\"", user, pass);
                                     }
                                   
-                                 switch(check_login(user, pass, &accesslevel, &i, &(status_array[i].clentaddr), authsrvs, &authcnt))
+                                 switch(check_login(user, pass, &accesslevel, &i, &(status_array[i]->clentaddr), authsrvs, &authcnt))
                                        {
                                         case AUTH_ACCEPT:
                                              send(i, "ACCEPT", 6, 0);
                                              set_socket_status(&status_array, i, authed, &master, user, accesslevel);
-                                             if (log_verbose>0) syslog(LOG_INFO, "User \"%s\" from %s on socket %d accepted with level %d", user, inet_ntoa(status_array[i].clentaddr), i, accesslevel);
+                                             if (log_verbose>0) syslog(LOG_INFO, "User \"%s\" from %s on socket %d accepted with level %d", user, inet_ntoa(status_array[i]->clentaddr), i, accesslevel);
                                              break;
                                         case AUTH_REJECT:
                                              send(i, "REJECT", 6, 0);
-                                             if (log_verbose>0) syslog(LOG_INFO, "User \"%s\" from %s on socket %d rejected", user, inet_ntoa(status_array[i].clentaddr), i);
+                                             if (log_verbose>0) syslog(LOG_INFO, "User \"%s\" from %s on socket %d rejected", user, inet_ntoa(status_array[i]->clentaddr), i);
                                              set_socket_status(&status_array, i, closed, &master, NULL, 0);
                                              break;
                                         case AUTH_NORESPONSE:
                                              send(i, "NORESPONSE", 10, 0);
-                                             if (log_verbose>0) syslog(LOG_INFO, "Radius server did not response to user from %s on socket %d make quiery",inet_ntoa(status_array[i].clentaddr), i);
+                                             if (log_verbose>0) syslog(LOG_INFO, "Radius server did not response to user from %s on socket %d make quiery",inet_ntoa(status_array[i]->clentaddr), i);
                                              set_socket_status(&status_array, i, closed, &master, NULL, 0);
                                              break;
                                         default:
@@ -540,18 +539,18 @@ int main(void)
                          
                          
                         //Сокет аутентифицирован, пришло сообщение об активности
-                         else if ((status_array[i].status==authed) && !strcmp(buf, "ALIVE"))
+                         else if ((status_array[i]->status==authed) && !strcmp(buf, "ALIVE"))
                             {
-                             if (difftime(time((time_t *)NULL), status_array[i].last_ans)<floodtimer)
+                             if (difftime(time((time_t *)NULL), status_array[i]->last_ans)<floodtimer)
                                 {
-                                 if (log_verbose>0) syslog(LOG_INFO, "User \"%s\" from %s on socket %d makes flood", status_array[i].sockuser, inet_ntoa(status_array[i].clentaddr), i);
+                                 if (log_verbose>0) syslog(LOG_INFO, "User \"%s\" from %s on socket %d makes flood", status_array[i]->sockuser, inet_ntoa(status_array[i]->clentaddr), i);
                                  send(i, "FLOOD", 5, 0);
                                  set_socket_status(&status_array, i, closed, &master, NULL, 0);
                                 }
                              else
                                 {
                                  update_socket_status(&status_array, i);
-                                 if (log_verbose>2) syslog(LOG_DEBUG, "User \"%s\" from %s on socket %d sends ALIVE message", status_array[i].sockuser, inet_ntoa(status_array[i].clentaddr), i);
+                                 if (log_verbose>2) syslog(LOG_DEBUG, "User \"%s\" from %s on socket %d sends ALIVE message", status_array[i]->sockuser, inet_ntoa(status_array[i]->clentaddr), i);
                                 }
                             }
                             
@@ -560,7 +559,7 @@ int main(void)
                          else
                             {
                              send(i, "INVALID", 7, 0);
-                             if (log_verbose>0) syslog(LOG_INFO, "Invalid query from %s on socket %d",inet_ntoa(status_array[i].clentaddr), i);
+                             if (log_verbose>0) syslog(LOG_INFO, "Invalid query from %s on socket %d",inet_ntoa(status_array[i]->clentaddr), i);
                              set_socket_status(&status_array, i, closed, &master, NULL, 0);
                             }
                          

@@ -1,7 +1,7 @@
 default: plg_dummy.c
 	gcc -fPIC plg_dummy.c -Wall -shared -o plg_dummy.so
-
-default: plg_dummy.c
+	
+debug: plg_dummy.c
 	gcc -fPIC -g plg_dummy.c -Wall -shared -o plg_dummy.so
 	
 clean:
