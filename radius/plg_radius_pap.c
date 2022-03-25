@@ -11,7 +11,8 @@ int checklogin(const char * username, const char * password, int * acclevel, con
 {
   int                   i;
   struct rad_handle *   radreq   =  rad_auth_open();
- 
+  *acclevel=0;
+  
   for(i=0; i<*radcnt; i++)
      {
       rad_add_server(radreq, radsrvs[i].authhost, radsrvs[i].authport, radsrvs[i].authsecret, radsrvs[i].authtimeout, radsrvs[i].authtries);

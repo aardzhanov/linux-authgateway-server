@@ -12,6 +12,7 @@
 #include <confuse.h>
 #include <time.h>
 #include <dlfcn.h>
+#include <sys/un.h>
 #include "authgwd.h"
 #include "authserver.h"
 
@@ -29,16 +30,17 @@ char *          bindaddr         = NULL;
 char *          startscript      = NULL;           //скрипт выполняемый при успешной аутентификации сокета
 char *          stopscript       = NULL;           //скрипт выполняемый при разрыве сокета
 char *          authplugin       = NULL;           //Плагин аутентификации
+char *          adm_socket_path  = NULL;           //Путь к сокету администрирования
 int             var_keepalive    = 1;
 int             var_keepidle     = 10;
 int             var_keepcnt      = 2;
 int             var_keepinvl     = 5;
-authserver *    authsrvs;
-int             authcnt;
+int             daemonwork       = 0;
+authserver *    authsrvs         = NULL;
+int             authcnt          = 0;
 /**************************************************************************************************
 * Конец Определяем глобальные переменные
 **************************************************************************************************/
-
 
 
 
@@ -91,7 +93,23 @@ void daemonize(void)
 **************************************************************************************************/
 
 
-
+psockstat get_socket_by_id(psockstat * begin_l, psockstat * end_l, int socketnum)
+{
+ psockstat current_l;
+ 
+ //Находим нужный нам сокет в списке и работаем с ним 
+ current_l=(*begin_l);
+ while ((current_l!=NULL) && (current_l->socknum!=socketnum))
+   {
+    current_l=current_l->nextrec;
+   }
+ //Если не нашли сокет в списке статусов
+ if (current_l==NULL)
+    {
+     syslog(LOG_ERR, "Socket %d not in list.", socketnum);
+    }
+ return current_l;
+}
 
 
 
@@ -108,24 +126,35 @@ int set_socket_closed (psockstat * current_l, psockstat * begin_l, psockstat * e
  psockstat tmp_l;
  struct linger sclsmethod;
   
- 
-  sclsmethod.l_onoff=1;
-  sclsmethod.l_linger=0;
-  setsockopt((*current_l)->socknum, SOL_SOCKET, SO_LINGER, &sclsmethod, sizeof(sclsmethod));
+  if  ((*current_l)->status!=admin)
+      {
+       sclsmethod.l_onoff=1;
+       sclsmethod.l_linger=0;
+       setsockopt((*current_l)->socknum, SOL_SOCKET, SO_LINGER, &sclsmethod, sizeof(sclsmethod));
+      }
+      
   clsstat=close((*current_l)->socknum);
   FD_CLR((*current_l)->socknum, &(*mysockfd));
+  
   if ((*current_l)->status==authed)
      {
       memset(&dynrule[0], '\0', 512);
-      snprintf(dynrule, 512, "%s %s %i %s %i", stopscript, inet_ntoa((*current_l)->clentaddr), (*current_l)->socknum, (*current_l)->sockuser, (*current_l)->accesslvl);
+      snprintf(dynrule, 512, "%s %s %i %s %i", stopscript, inet_ntoa((*current_l)->socket_data->clentaddr), (*current_l)->socknum, (*current_l)->socket_data->sockuser, (*current_l)->socket_data->accesslvl);
       system(dynrule);
-      if (log_verbose>0) syslog(LOG_INFO, "User %s from %s on socket %d with level %d close connection with status %d", (*current_l)->sockuser, inet_ntoa((*current_l)->clentaddr), (*current_l)->socknum, (*current_l)->accesslvl, clsstat);
-      free((*current_l)->sockuser);
+      if (log_verbose>0) syslog(LOG_INFO, "User %s from %s on socket %d with level %d close connection with status %d", (*current_l)->socket_data->sockuser, inet_ntoa((*current_l)->socket_data->clentaddr), (*current_l)->socknum, (*current_l)->socket_data->accesslvl, clsstat);
+      free((*current_l)->socket_data->sockuser);
+      free ((*current_l)->socket_data);
+     }
+  else if ((*current_l)->status==opened)
+     {
+      if (log_verbose>0) syslog(LOG_INFO, "User from %s on socket %d close connection with status %d", inet_ntoa((*current_l)->socket_data->clentaddr), (*current_l)->socknum, clsstat);
+      free ((*current_l)->socket_data);     
      }
   else
      {
-      if (log_verbose>0) syslog(LOG_INFO, "User from %s on socket %d close connection with status %d", inet_ntoa((*current_l)->clentaddr), (*current_l)->socknum, clsstat);
+      if (log_verbose>0) syslog(LOG_INFO, "Admin on socket %d close connection with status %d", (*current_l)->socknum, clsstat);
      }
+  
   
   tmp_l=(*current_l)->nextrec;
   if ((*current_l)->prevrec!=NULL) 
@@ -145,6 +174,7 @@ int set_socket_closed (psockstat * current_l, psockstat * begin_l, psockstat * e
      {
       (*end_l)=(*current_l)->prevrec;
      }
+  
   free ((*current_l));
  (*current_l)=tmp_l;
  return 0;
@@ -182,17 +212,70 @@ int set_socket_opened (psockstat * current_l, psockstat * begin_l, psockstat * e
      }
   
   (*end_l)->status=opened;
+  (*end_l)->socknum=sockdescr;
+  //Инициалиизируем структуру sockdescr и заполняем ее поля
+  (*end_l)->socket_data=calloc(1, sizeof(sockdescr));
   (*end_l)->last_ans=time((time_t *)NULL);
   len = sizeof(rmtaddr);
   getpeername(sockdescr, (struct sockaddr*)&rmtaddr, &len);
-  (*end_l)->clentaddr=rmtaddr.sin_addr;
-  (*end_l)->accesslvl=0;
-  (*end_l)->socknum=sockdescr;
-  (*end_l)->sockuser=NULL;
+  (*end_l)->socket_data->clentaddr=rmtaddr.sin_addr;
+  (*end_l)->socket_data->accesslvl=0;
+  (*end_l)->socket_data->sockuser=NULL;
  
  return 0;
  
 }
+
+
+
+/**************************************************************************************************
+* Конец Функция установки статуса на сокет: Открыт
+**************************************************************************************************/
+
+
+
+/**************************************************************************************************
+* Функция установки статуса на сокет: Администратор
+**************************************************************************************************/
+
+int set_socket_admin (psockstat * current_l, psockstat * begin_l, psockstat * end_l, int sockdescr)
+{
+  
+
+  if (!(*begin_l))
+     {
+      (*begin_l)=calloc(1, sizeof(sockstat));
+      (*begin_l)->prevrec=NULL;    
+      (*begin_l)->nextrec=NULL;
+      (*end_l)=(*begin_l);
+     }
+  else
+     {
+      (*end_l)->nextrec=calloc(1, sizeof(sockstat));
+      (*end_l)->nextrec->nextrec=NULL;
+      (*end_l)->nextrec->prevrec=(*end_l);
+      (*end_l)=(*end_l)->nextrec;
+     }
+  
+  (*end_l)->status=admin;
+  (*end_l)->socknum=sockdescr;
+  (*end_l)->last_ans=time((time_t *)NULL);
+  (*end_l)->socket_data=NULL;
+ 
+ return 0;
+ 
+}
+
+
+/**************************************************************************************************
+* Конец Функция установки статуса на сокет: Администратор
+**************************************************************************************************/
+
+
+
+
+
+
 
 
 
@@ -206,13 +289,13 @@ int set_socket_authed (psockstat * current_l, char * user, int acclvl)
   
 
   memset(&dynrule[0], '\0', 512);
-  snprintf(dynrule, 512, "%s %s %i %s %i", startscript, inet_ntoa((*current_l)->clentaddr), (*current_l)->socknum, user, acclvl);
+  snprintf(dynrule, 512, "%s %s %i %s %i", startscript, inet_ntoa((*current_l)->socket_data->clentaddr), (*current_l)->socknum, user, acclvl);
   system(dynrule);
-  (*current_l)->sockuser=calloc(strlen(user)+1, sizeof(char));
-  strncpy((*current_l)->sockuser, user, strlen(user));
+  (*current_l)->socket_data->sockuser=calloc(strlen(user)+1, sizeof(char));
+  strncpy((*current_l)->socket_data->sockuser, user, strlen(user));
   (*current_l)->status=authed;
   (*current_l)->last_ans=time((time_t *)NULL);
-  (*current_l)->accesslvl=acclvl;
+  (*current_l)->socket_data->accesslvl=acclvl;
  
  return 0;
 }
@@ -245,29 +328,36 @@ void update_socket_status (psockstat * curr_socket)
 
 int main(int argc, char **argv)
 {
- fd_set                    master;                                // master file descriptor list
- fd_set                    read_fds;                              // temp file descriptor list for select()
- struct sockaddr_in        myaddr;                                // server address
- struct sockaddr_in        remoteaddr;                            // client address
- int                       fdmax;                                 // maximum file descriptor number
- int                       listener;                              // listening socket descriptor
- int                       newfd;                                 // newly accept()ed socket descriptor
- char                      buf[256];                              // buffer for client data
- int                       nbytes;                                // кол-во считанных байт из сокета
- int                       yes=1;                                 // for setsockopt() SO_REUSEADDR, below
+ fd_set                    master;                                 // master file descriptor list
+ fd_set                    read_fds;                               // temp file descriptor list for select()
+ struct sockaddr_in        myaddr;                                 // server address
+ struct sockaddr_un        adm_addr, cli_addr;                     // admin server address
+ struct sockaddr_in        remoteaddr;                             // client address
+ int                       fdmax;                                  // maximum file descriptor number
+ int                       listener, adm_listener;                 // listening socket descriptor
+ int                       newfd;                                  // newly accept()ed socket descriptor
+ char                      buf[256];                               // buffer for client data
+ int                       nbytes               = 0;               // кол-во считанных байт из сокета
+ int                       yes                  = 1;               // for setsockopt() SO_REUSEADDR, below
  socklen_t                 addrlen;                               
  int                       i;                                     
- int                       k;                                     // Переменная для цикла обхода сокетов
- psockstat                 bstat_list           =NULL;            // Ссылка на массив состояний сокета
- psockstat                 estat_list           =NULL;
- psockstat                 cstat_list           =NULL;
+ int                       k;                                      // Переменная для цикла обхода сокетов
+ psockstat                 bstat_list           = NULL;            // Ссылка на массив состояний сокета
+ psockstat                 estat_list           = NULL;
+ psockstat                 cstat_list           = NULL;
+ psockstat                 dstat_list           = NULL;
  struct timeval            tv;
- int                       selectstatus;
- char *                    user;                                  //Переменная, хранящая имя пользователя
- char *                    pass;                                  //Переменная, хранящая пароль
- int                       accesslevel;                           //Переменная, хранящая уровень доступа
- void *                    plg_handle;                            //Ссылка на плагин
-
+ int                       selectstatus         = 0;
+ char *                    user                 = NULL;            //Переменная, хранящая имя пользователя
+ char *                    pass                 = NULL;            //Переменная, хранящая пароль
+ int                       accesslevel          = 0;               //Переменная, хранящая уровень доступа
+ void *                    plg_handle           = NULL;            //Ссылка на плагин
+ int                       icom_param           = 0;
+ struct tm *               time_ptr;
+ char                      time_str[15]; 
+ 
+ openlog("authgwd", LOG_PID, LOG_DAEMON);  
+ 
  // Read config file
  cfg_opt_t server_opts[] =
     {
@@ -290,10 +380,12 @@ int main(int argc, char **argv)
      CFG_SIMPLE_INT("keepcnt", &var_keepcnt),
      CFG_SIMPLE_INT("keepinvl", &var_keepinvl),
      CFG_SIMPLE_INT("selecttime", &selecttime),
+     CFG_SIMPLE_INT("daemonize", &daemonwork),
      CFG_SIMPLE_STR("bindaddr", &bindaddr),
      CFG_SIMPLE_STR("startscript", &startscript),
      CFG_SIMPLE_STR("stopscript", &stopscript),
      CFG_SIMPLE_STR("authplugin", &authplugin),
+     CFG_SIMPLE_STR("adm_socket_path", &adm_socket_path),
      CFG_SEC("server", server_opts, CFGF_TITLE | CFGF_MULTI),
      CFG_END()
      };
@@ -332,8 +424,10 @@ int main(int argc, char **argv)
      exit(1);
     }
 
-
- daemonize();
+ if (daemonwork)
+    {
+     daemonize();
+    }
  
  //Загружаем плагин работы с сервером аутентификации
  int (*check_login)(const char *, const char *, int *, const int *, const struct in_addr *, const authserver *, const int *);
@@ -347,9 +441,11 @@ int main(int argc, char **argv)
  if(dlerror() != NULL) 
    {
     dlclose(plg_handle);
+    syslog(LOG_ERR, "Loaded plugin incorrect");
     exit(1);
    }
-
+ 
+ if (log_verbose>0) syslog(LOG_INFO, "Plugin %s loaded successfully", authplugin);
 
  
 
@@ -358,7 +454,7 @@ int main(int argc, char **argv)
 
  memset(&buf[0], '\0', 255);   //Initialize buffer with \0
  
- openlog("authgwd", LOG_PID, LOG_DAEMON);                        
+                       
 
  // get the listener
  if ((listener = socket(AF_INET, SOCK_STREAM, 0)) == -1)
@@ -393,11 +489,24 @@ int main(int argc, char **argv)
      exit(1);
     }
 
+ //Создаем сокет для администрирования
+ adm_listener = socket( AF_LOCAL, SOCK_STREAM, 0 );
+ unlink(adm_socket_path);
+ bzero( &adm_addr, sizeof( adm_addr ) );
+ adm_addr.sun_family = AF_LOCAL;
+ strcpy( adm_addr.sun_path, adm_socket_path);
+ bind( adm_listener, ( struct sockaddr* ) &adm_addr, sizeof( adm_addr ) );
+ listen( adm_listener, 10 );
+
+
+
+
  // add the listener to the master set
  FD_SET(listener, &master);
+ FD_SET(adm_listener, &master);
 
  // keep track of the biggest file descriptor
- fdmax = listener; // so far, it's this one
+ fdmax = adm_listener; // so far, it's this one
  
 
  for(;;) 
@@ -410,7 +519,17 @@ int main(int argc, char **argv)
            {
             if (difftime(time((time_t *)NULL), (cstat_list->last_ans))>stoptimeout)
                {
-                if (log_verbose>0) syslog(LOG_INFO, "User from %s on socket %d reset, because he is not ALIVE", inet_ntoa(cstat_list->clentaddr), cstat_list->socknum);
+                if (log_verbose>0)
+                   { 
+                    if (cstat_list->status!=admin)
+                       {
+                        syslog(LOG_INFO, "User from %s on socket %d reset, because he is not ALIVE", inet_ntoa(cstat_list->socket_data->clentaddr), cstat_list->socknum);
+                       }                    
+                    else
+                       { 
+                        syslog(LOG_INFO, "Admin on socket %d reset, because timeout", cstat_list->socknum);
+                       }
+                   }
                 set_socket_closed(&cstat_list, &bstat_list, &estat_list, &master);
                }
             else
@@ -475,43 +594,55 @@ int main(int argc, char **argv)
                               syslog(LOG_INFO, "New connection from %s on socket %d", inet_ntoa(remoteaddr.sin_addr), newfd);
                              }
                          }
+                    }
+                 else if (i == adm_listener)
+                    {
+                     // Запрос на новое соединение от администратора
+                     addrlen = sizeof(cli_addr);
+                     if ((newfd = accept(adm_listener, (struct sockaddr *)&cli_addr, &addrlen)) == -1)
+                         { 
+                          syslog(LOG_ERR, "Can not accept new connection from admin on socket %d", newfd);
+                         } 
+                     else 
+                         {
+                          FD_SET(newfd, &master); // add to master set
+                       
+                          if (newfd > fdmax) // keep track of the maximum
+                             {    
+                              fdmax = newfd;
+                             }
+                          //добавляем сокет в массив состояний
+                         }
+                     set_socket_admin(&cstat_list, &bstat_list, &estat_list, newfd); 
                     } 
                  else 
                     {
                      // Пришли даннае от клиента
                      
-                     //Находим нужный нам сокет в списке и работаем с ним 
-                     cstat_list=bstat_list;
-                     while ((cstat_list!=NULL) && (cstat_list->socknum!=i))
-                       {
-                        cstat_list=cstat_list->nextrec;
-                       }
-                     //Если не нашли сокет в списке статусов
+                     cstat_list=get_socket_by_id(&bstat_list, &estat_list, i);
                      if (cstat_list==NULL)
                         {
-                         syslog(LOG_ERR, "Socket %d not in list. This is programm error, please contact with developer.", i);
+                         syslog(LOG_ERR, "Socket %d not in list. This is a program error. Please contact with developer.", i);
                          exit(1);
-                        }
-                                         
+                        }                    
                      
                      if ((nbytes = recv(i, buf, sizeof(buf)-1, 0)) <= 0)
                         {
                          // got error or connection closed by client
-                         if (nbytes == 0) 
+                         if (nbytes == 0 || cstat_list->status==admin) 
                             {
                              if (log_verbose>1) syslog(LOG_DEBUG, "Close query on socket %d", i);
                             } 
                          else 
                             {
-                             syslog(LOG_ERR, "Receive error from %s on socket %d", inet_ntoa(cstat_list->clentaddr),i);
+                             syslog(LOG_ERR, "Receive error from %s on socket %d", inet_ntoa(cstat_list->socket_data->clentaddr),i);
                             }
                          set_socket_closed(&cstat_list, &bstat_list, &estat_list, &master);
                         } 
 
                      else 
                         {
-                         
-                         
+                                                 
                         //Сокет открыт, пришел логин-пароль
                          if (cstat_list->status==opened && strchr(&buf[0], '@')>0)
                             {
@@ -543,21 +674,21 @@ int main(int argc, char **argv)
                                     syslog(LOG_DEBUG, "User: \"%s\", Password: \"%s\"", user, pass);
                                     }
                                   
-                                 switch(check_login(user, pass, &accesslevel, &i, &(cstat_list->clentaddr), authsrvs, &authcnt))
+                                 switch(check_login(user, pass, &accesslevel, &i, &(cstat_list->socket_data->clentaddr), authsrvs, &authcnt))
                                        {
                                         case AUTH_ACCEPT:
                                              send(i, "ACCEPT", 6, 0);
                                              set_socket_authed(&cstat_list, user, accesslevel);
-                                             if (log_verbose>0) syslog(LOG_INFO, "User \"%s\" from %s on socket %d accepted with level %d", user, inet_ntoa(cstat_list->clentaddr), i, accesslevel);
+                                             if (log_verbose>0) syslog(LOG_INFO, "User \"%s\" from %s on socket %d accepted with level %d", user, inet_ntoa(cstat_list->socket_data->clentaddr), i, accesslevel);
                                              break;
                                         case AUTH_REJECT:
                                              send(i, "REJECT", 6, 0);
-                                             if (log_verbose>0) syslog(LOG_INFO, "User \"%s\" from %s on socket %d rejected", user, inet_ntoa(cstat_list->clentaddr), i);
+                                             if (log_verbose>0) syslog(LOG_INFO, "User \"%s\" from %s on socket %d rejected", user, inet_ntoa(cstat_list->socket_data->clentaddr), i);
                                              set_socket_closed(&cstat_list, &bstat_list, &estat_list, &master);
                                              break;
                                         case AUTH_NORESPONSE:
                                              send(i, "NORESPONSE", 10, 0);
-                                             if (log_verbose>0) syslog(LOG_INFO, "Radius server did not response to user from %s on socket %d make quiery",inet_ntoa(cstat_list->clentaddr), i);
+                                             if (log_verbose>0) syslog(LOG_INFO, "Radius server did not response to user from %s on socket %d make quiery",inet_ntoa(cstat_list->socket_data->clentaddr), i);
                                              set_socket_closed(&cstat_list, &bstat_list, &estat_list, &master);
                                              break;
                                         default:
@@ -583,23 +714,100 @@ int main(int argc, char **argv)
                             {
                              if (difftime(time((time_t *)NULL), cstat_list->last_ans)<floodtimer)
                                 {
-                                 if (log_verbose>0) syslog(LOG_INFO, "User \"%s\" from %s on socket %d makes flood", cstat_list->sockuser, inet_ntoa(cstat_list->clentaddr), i);
+                                 if (log_verbose>0) syslog(LOG_INFO, "User \"%s\" from %s on socket %d makes flood", cstat_list->socket_data->sockuser, inet_ntoa(cstat_list->socket_data->clentaddr), i);
                                  send(i, "FLOOD", 5, 0);
                                  set_socket_closed(&cstat_list, &bstat_list, &estat_list, &master);
                                 }
                              else
                                 {
                                  update_socket_status(&cstat_list);
-                                 if (log_verbose>2) syslog(LOG_DEBUG, "User \"%s\" from %s on socket %d sends ALIVE message", cstat_list->sockuser, inet_ntoa(cstat_list->clentaddr), i);
+                                 if (log_verbose>2) syslog(LOG_DEBUG, "User \"%s\" from %s on socket %d sends ALIVE message", cstat_list->socket_data->sockuser, inet_ntoa(cstat_list->socket_data->clentaddr), i);
                                 }
                             }
                             
+                        
+                        
+                        //Пришла команда от админ-сокета
+                        else if(cstat_list->status==admin)
+                           {
+                            
+                            if (log_verbose>2) syslog(LOG_DEBUG, "Admin message received from socket %d : %s", i, buf);
+                            //Команда на закрытие соединения
+                            if (!strncmp(buf, "close", 5))
+                               {
+                                sscanf(strchr(&buf[0], ' '), "%i", &icom_param);
+                                dstat_list=get_socket_by_id(&bstat_list, &estat_list, icom_param);
+                                if (dstat_list!=NULL)
+                                   {
+                                    memset(&buf[0], '\0', 255);
+                                    switch(dstat_list->status)
+                                          {
+                                           case authed:
+                                                snprintf(buf, 255, "Status: authed, Socket: %d, User: %s, IP: %s, closed", dstat_list->socknum, dstat_list->socket_data->sockuser, inet_ntoa(dstat_list->socket_data->clentaddr));
+                                                if (log_verbose>0) syslog(LOG_INFO, "User \"%s\" from %s on socket %d closed by admin", dstat_list->socket_data->sockuser, inet_ntoa(dstat_list->socket_data->clentaddr), icom_param);
+                                                break;
+                                           case opened:
+                                                snprintf(buf, 255, "Status: opened, Socket: %d, IP: %s, closed", dstat_list->socknum, inet_ntoa(dstat_list->socket_data->clentaddr));
+                                                if (log_verbose>0) syslog(LOG_INFO, "User from %s on socket %d closed by admin", inet_ntoa(dstat_list->socket_data->clentaddr), icom_param);
+                                                break;
+                                           case admin:
+                                                snprintf(buf, 255, "Status: admin, Socket: %d, closed", dstat_list->socknum);
+                                                if (log_verbose>0) syslog(LOG_INFO, "Admin on socket %d closed by admin", icom_param);
+                                                break;
+                                          }
+                                    
+                                    send(i, buf, strlen(buf), 0);
+                                    if (dstat_list!=cstat_list)
+                                       {
+                                        set_socket_closed(&dstat_list, &bstat_list, &estat_list, &master);
+                                       }
+                                    
+                                   }
+                                 else
+                                   {
+                                    send(i, "NOTFOUND", 9, 0);
+                                   }
+                               }
+                            else if (!strncmp(buf, "userlist", 8))
+                               {
+                                dstat_list=bstat_list;
+                                while (dstat_list!=NULL)
+                                      {
+                                       memset(&buf[0], '\0', 255);
+                                       time_ptr=localtime(&(dstat_list->last_ans));
+                                       strftime(time_str, 15, "%T", time_ptr);
+                                       switch(dstat_list->status)
+                                             {
+                                              case authed: 
+                                                   snprintf(buf, 255, "%-10d%-17s%-31s%-10d%-10s%-7s", dstat_list->socknum, inet_ntoa(dstat_list->socket_data->clentaddr), dstat_list->socket_data->sockuser, dstat_list->socket_data->accesslvl, time_str, "Authed");   
+                                                   break;
+                                              case opened: 
+                                                   snprintf(buf, 255, "%-10d%-17s%-31s%-10s%-10s%-7s", dstat_list->socknum, inet_ntoa(dstat_list->socket_data->clentaddr), "<N/A>", "<N/A>", time_str, "Opened");   
+                                                   break;
+                                              case admin: 
+                                                   snprintf(buf, 255, "%-10d%-17s%-31s%-10s%-10s%-7s", dstat_list->socknum, "<N/A>", "<N/A>", "<N/A>", time_str, "Admin");   
+                                                   break;
+                                             }
+                                       send(i, buf, strlen(buf),0);
+                                       dstat_list=dstat_list->nextrec;
+                                      }
+                               
+                               }
+                            else
+                               {
+                                send(i, "ERRCOMMAND", 10, 0);
+                               }
+                           
+                            set_socket_closed(&cstat_list, &bstat_list, &estat_list, &master);
+                           
+                           
+                           }
                             
                         //В любом другом случае отвечаем о некорректности и закрываем сокет
                          else
                             {
                              send(i, "INVALID", 7, 0);
-                             if (log_verbose>0) syslog(LOG_INFO, "Invalid query from %s on socket %d",inet_ntoa(cstat_list->clentaddr), i);
+                             if (log_verbose>0) syslog(LOG_INFO, "Invalid query from %s on socket %d",inet_ntoa(cstat_list->socket_data->clentaddr), i);
                              set_socket_closed(&cstat_list, &bstat_list, &estat_list, &master);
                             }
                          
