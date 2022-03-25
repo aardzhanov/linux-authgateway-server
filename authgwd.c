@@ -98,95 +98,141 @@ void daemonize(void)
 
 
 /**************************************************************************************************
-* Функция установки статуса на сокет
+* Функция установки статуса на сокет: Закрыт
 **************************************************************************************************/
-int set_socket_status (ind_psockstat * arr_st, int sockdescr, statenum mystatus, fd_set * mysockfd, char * user, int acclvl)
+int set_socket_closed (psockstat * current_l, psockstat * begin_l, psockstat * end_l, fd_set * mysockfd)
 {
- char * dynrule;
- struct linger sclsmethod;
- struct sockaddr_in rmtaddr;
- socklen_t len;
+  
+ char dynrule[512];
  int clsstat;
-
- switch(mystatus)
-       {
-       case closed:
-            sclsmethod.l_onoff=1;
-            sclsmethod.l_linger=0;
-            setsockopt(sockdescr, SOL_SOCKET, SO_LINGER, &sclsmethod, sizeof(sclsmethod));
-            clsstat=close(sockdescr);
-            FD_CLR(sockdescr, &(*mysockfd));
-            if ((*arr_st)[sockdescr]->status==authed)
-               {
-                dynrule = malloc(250);
-                if(!dynrule) 
-                  { 
-                   syslog(LOG_ERR, "Command variable allocation error");
-                  }
-                memset(dynrule, '\0', 250);
-                sprintf(dynrule, "%s %s %i %s %i", stopscript, inet_ntoa((*arr_st)[sockdescr]->clentaddr), sockdescr, (*arr_st)[sockdescr]->sockuser, (*arr_st)[sockdescr]->accesslvl);
-                system(dynrule);
-                free(dynrule);
-                if (log_verbose>0) syslog(LOG_INFO, "User %s from %s on socket %d with level %d close connection with status %d", (*arr_st)[sockdescr]->sockuser, inet_ntoa((*arr_st)[sockdescr]->clentaddr), sockdescr, (*arr_st)[sockdescr]->accesslvl, clsstat);
-                free((*arr_st)[sockdescr]->sockuser);
-               }
-            else
-               {
-                if (log_verbose>0) syslog(LOG_INFO, "User from %s on socket %d close connection with status %d", inet_ntoa((*arr_st)[sockdescr]->clentaddr), sockdescr, clsstat);
-               }
-            (*arr_st)[sockdescr]->status=closed;
-            (*arr_st)[sockdescr]->clentaddr.s_addr=0;
-            (*arr_st)[sockdescr]->accesslvl=0;
-            free ((*arr_st)[sockdescr]);
-            (*arr_st)[sockdescr]=NULL;
-            break;
-       case opened:
-            (*arr_st)[sockdescr]=calloc(1, sizeof(sockstat));
-            (*arr_st)[sockdescr]->status=mystatus;
-            (*arr_st)[sockdescr]->last_ans=time((time_t *)NULL);
-            len = sizeof(rmtaddr);
-            getpeername(sockdescr, (struct sockaddr*)&rmtaddr, &len);
-            (*arr_st)[sockdescr]->clentaddr=rmtaddr.sin_addr;
-            break;
-       case authed:
-            dynrule = malloc(250);
-            if(!dynrule) 
-              { 
-               syslog(LOG_ERR, "Command variable allocation error");
-              }
-            memset(dynrule, '\0', 250);
-            sprintf(dynrule, "%s %s %i %s %i", startscript, inet_ntoa((*arr_st)[sockdescr]->clentaddr), sockdescr, user, acclvl);
-            system(dynrule);
-            free(dynrule);
-            (*arr_st)[sockdescr]->sockuser=calloc(1, strlen(user)+1);
-            strncpy((*arr_st)[sockdescr]->sockuser, user, strlen(user));
-            (*arr_st)[sockdescr]->status=mystatus;
-            (*arr_st)[sockdescr]->last_ans=time((time_t *)NULL);
-            (*arr_st)[sockdescr]->accesslvl=acclvl;
-            break;
-       case listened:
-            (*arr_st)[sockdescr]=calloc(1, sizeof(sockstat));
-            (*arr_st)[sockdescr]->status=mystatus;
-            (*arr_st)[sockdescr]->last_ans=time((time_t *)NULL);
-            break;
-       }
+ psockstat tmp_l;
+ struct linger sclsmethod;
+  
  
- return sockdescr;
+  sclsmethod.l_onoff=1;
+  sclsmethod.l_linger=0;
+  setsockopt((*current_l)->socknum, SOL_SOCKET, SO_LINGER, &sclsmethod, sizeof(sclsmethod));
+  clsstat=close((*current_l)->socknum);
+  FD_CLR((*current_l)->socknum, &(*mysockfd));
+  if ((*current_l)->status==authed)
+     {
+      memset(&dynrule[0], '\0', 512);
+      snprintf(dynrule, 512, "%s %s %i %s %i", stopscript, inet_ntoa((*current_l)->clentaddr), (*current_l)->socknum, (*current_l)->sockuser, (*current_l)->accesslvl);
+      system(dynrule);
+      if (log_verbose>0) syslog(LOG_INFO, "User %s from %s on socket %d with level %d close connection with status %d", (*current_l)->sockuser, inet_ntoa((*current_l)->clentaddr), (*current_l)->socknum, (*current_l)->accesslvl, clsstat);
+      free((*current_l)->sockuser);
+     }
+  else
+     {
+      if (log_verbose>0) syslog(LOG_INFO, "User from %s on socket %d close connection with status %d", inet_ntoa((*current_l)->clentaddr), (*current_l)->socknum, clsstat);
+     }
+  
+  tmp_l=(*current_l)->nextrec;
+  if ((*current_l)->prevrec!=NULL) 
+     {
+      (*current_l)->prevrec->nextrec=(*current_l)->nextrec;
+     }
+  else
+     {
+      (*begin_l)=(*current_l)->nextrec;
+     }
 
+  if ((*current_l)->nextrec!=NULL)
+     {
+      (*current_l)->nextrec->prevrec=(*current_l)->prevrec;
+     }
+  else
+     {
+      (*end_l)=(*current_l)->prevrec;
+     }
+  free ((*current_l));
+ (*current_l)=tmp_l;
+ return 0;
+ 
 }
+
+
+
+/**************************************************************************************************
+* Функция установки статуса на сокет: Открыт
+**************************************************************************************************/
+
+
+int set_socket_opened (psockstat * current_l, psockstat * begin_l, psockstat * end_l, int sockdescr)
+{
+  
+ struct sockaddr_in rmtaddr;
+ socklen_t len; 
+  
+  
+  
+  if (!(*begin_l))
+     {
+      (*begin_l)=calloc(1, sizeof(sockstat));
+      (*begin_l)->prevrec=NULL;    
+      (*begin_l)->nextrec=NULL;
+      (*end_l)=(*begin_l);
+     }
+  else
+     {
+      (*end_l)->nextrec=calloc(1, sizeof(sockstat));
+      (*end_l)->nextrec->nextrec=NULL;
+      (*end_l)->nextrec->prevrec=(*end_l);
+      (*end_l)=(*end_l)->nextrec;
+     }
+  
+  (*end_l)->status=opened;
+  (*end_l)->last_ans=time((time_t *)NULL);
+  len = sizeof(rmtaddr);
+  getpeername(sockdescr, (struct sockaddr*)&rmtaddr, &len);
+  (*end_l)->clentaddr=rmtaddr.sin_addr;
+  (*end_l)->accesslvl=0;
+  (*end_l)->socknum=sockdescr;
+  (*end_l)->sockuser=NULL;
+ 
+ return 0;
+ 
+}
+
+
+
+/**************************************************************************************************
+* Функция установки статуса на сокет: Пользователь аутентифицирован
+**************************************************************************************************/
+
+int set_socket_authed (psockstat * current_l, char * user, int acclvl)
+{
+  char dynrule[512];
+  
+
+  memset(&dynrule[0], '\0', 512);
+  snprintf(dynrule, 512, "%s %s %i %s %i", startscript, inet_ntoa((*current_l)->clentaddr), (*current_l)->socknum, user, acclvl);
+  system(dynrule);
+  (*current_l)->sockuser=calloc(strlen(user)+1, sizeof(char));
+  strncpy((*current_l)->sockuser, user, strlen(user));
+  (*current_l)->status=authed;
+  (*current_l)->last_ans=time((time_t *)NULL);
+  (*current_l)->accesslvl=acclvl;
+ 
+ return 0;
+}
+
 
 /**************************************************************************************************
 * Конец Функция установки статуса на сокет
 **************************************************************************************************/
 
 
+
+
+
 /**************************************************************************************************
 * Функция Обновления времени сокета
 **************************************************************************************************/
-void update_socket_status (ind_psockstat * arr_st, int sockdescr)
+void update_socket_status (psockstat * curr_socket)
 {
 
- (*arr_st)[sockdescr]->last_ans=time((time_t *)NULL);
+ (*curr_socket)->last_ans=time((time_t *)NULL);
 
 }
 /**************************************************************************************************
@@ -197,7 +243,7 @@ void update_socket_status (ind_psockstat * arr_st, int sockdescr)
 
 
 
-int main(void)
+int main(int argc, char **argv)
 {
  fd_set                    master;                                // master file descriptor list
  fd_set                    read_fds;                              // temp file descriptor list for select()
@@ -212,14 +258,15 @@ int main(void)
  socklen_t                 addrlen;                               
  int                       i;                                     
  int                       k;                                     // Переменная для цикла обхода сокетов
- ind_psockstat             status_array;                          // Ссылка на массив состояний сокета
- int                       currsock             = 0;
+ psockstat                 bstat_list           =NULL;            // Ссылка на массив состояний сокета
+ psockstat                 estat_list           =NULL;
+ psockstat                 cstat_list           =NULL;
  struct timeval            tv;
  int                       selectstatus;
  char *                    user;                                  //Переменная, хранящая имя пользователя
  char *                    pass;                                  //Переменная, хранящая пароль
  int                       accesslevel;                           //Переменная, хранящая уровень доступа
- void *                    plg_handle;                                //Ссылка на плагин
+ void *                    plg_handle;                            //Ссылка на плагин
 
  // Read config file
  cfg_opt_t server_opts[] =
@@ -253,7 +300,7 @@ int main(void)
  cfg_t *cfg, *cfg_server;
  bindaddr = strdup("0.0.0.0");
  cfg = cfg_init(opts, 0);
- cfg_parse(cfg, "authgwd.conf");
+ cfg_parse(cfg, argc > 1 ? argv[1] : "/etc/authgwd.conf");
  //Выделяем память под хранения настроек северов
  authcnt=cfg_size(cfg, "server");
  authsrvs=calloc(authcnt, sizeof(authserver));
@@ -265,10 +312,10 @@ int main(void)
  for(k = 0; k < authcnt; k++)
     {
     cfg_server = cfg_getnsec(cfg, "server", k);
-    authsrvs[k].authhost=calloc(1, strlen(cfg_getstr(cfg_server, "authhost"))+1);
+    authsrvs[k].authhost=calloc(strlen(cfg_getstr(cfg_server, "authhost"))+1, sizeof(char));
     strcpy(authsrvs[k].authhost, cfg_getstr(cfg_server, "authhost"));
     authsrvs[k].authport = cfg_getint(cfg_server, "authport");
-    authsrvs[k].authsecret=calloc(1, strlen(cfg_getstr(cfg_server, "authsecret"))+1);
+    authsrvs[k].authsecret=calloc(strlen(cfg_getstr(cfg_server, "authsecret"))+1, sizeof(char));
     strcpy(authsrvs[k].authsecret, cfg_getstr(cfg_server, "authsecret"));
     authsrvs[k].authtries = cfg_getint(cfg_server, "authtries");
     authsrvs[k].authtimeout = cfg_getint(cfg_server, "authtimeout");
@@ -352,41 +399,30 @@ int main(void)
  // keep track of the biggest file descriptor
  fdmax = listener; // so far, it's this one
  
- //выделяем память под динамический массив с состоянием сокетов
- status_array=calloc(fdmax+1, sizeof(psockstat));
- if (!status_array)
-    {
-     syslog(LOG_ERR, "Can not allocate memory for status array");
-     exit(1);
-    }
- //Инициализируем память массива
- for (k=0; k<=fdmax; k++)
-     {
-      status_array[k]=NULL;
-     } 
 
- set_socket_status(&status_array, listener, listened, &master, NULL, 0);
- 
  for(;;) 
     { // main loop
 
   
+  //Закрываем все сокеты с истекшим временем
+     cstat_list=bstat_list;
+     while (cstat_list!=NULL)
+           {
+            if (difftime(time((time_t *)NULL), (cstat_list->last_ans))>stoptimeout)
+               {
+                if (log_verbose>0) syslog(LOG_INFO, "User from %s on socket %d reset, because he is not ALIVE", inet_ntoa(cstat_list->clentaddr), cstat_list->socknum);
+                set_socket_closed(&cstat_list, &bstat_list, &estat_list, &master);
+               }
+            else
+               {
+                cstat_list=cstat_list->nextrec;
+               }
+           } 
+     
   
-     do {
-         currsock++;
-        } 
-     while ( (fdmax>currsock) && !FD_ISSET(currsock, &master) );
+
   
-  if ( (status_array[currsock]!=NULL) && (difftime(time((time_t *)NULL), status_array[currsock]->last_ans)>stoptimeout) && ((status_array[currsock]->status==opened) || (status_array[currsock]->status==authed)))
-      {
-       if (log_verbose>0) syslog(LOG_INFO, "User from %s on socket %d reset, because he is not ALIVE", inet_ntoa(status_array[currsock]->clentaddr), currsock);
-       set_socket_status(&status_array, currsock, closed, &master, NULL, 0);
-      }
-  
-  if (fdmax<=currsock)
-     {
-      currsock=0;
-     }  
+
      
 
      tv.tv_sec = selecttime;
@@ -409,7 +445,7 @@ int main(void)
                  
                  if (i == listener) 
                     {
-                     // handle new connections
+                     // Запрос на новое соединение
                      addrlen = sizeof(remoteaddr);
                      if ((newfd = accept(listener, (struct sockaddr *)&remoteaddr, &addrlen)) == -1)
                          { 
@@ -421,17 +457,10 @@ int main(void)
                        
                           if (newfd > fdmax) // keep track of the maximum
                              {    
-                              //Выделяем в своем массиве новую память
-                              status_array=realloc(status_array, (newfd+1)*sizeof(psockstat));
-                              //Инициализируем новые элементы
-                              for (k=fdmax+1; k<=newfd; k++)
-                                  {
-                                   status_array[k]=NULL;
-                                  }                          
                               fdmax = newfd;
                              }
                           //добавляем сокет в массив состояний
-                          set_socket_status(&status_array, newfd, opened, &master, NULL, 0);
+                          set_socket_opened(&cstat_list, &bstat_list, &estat_list, newfd);
                           setsockopt(newfd, SOL_SOCKET, SO_KEEPALIVE, &var_keepalive, sizeof(int));
                           setsockopt(newfd, SOL_TCP, TCP_KEEPIDLE, &var_keepidle, sizeof(int));
                           setsockopt(newfd, SOL_TCP, TCP_KEEPINTVL, &var_keepinvl, sizeof(int));
@@ -449,31 +478,42 @@ int main(void)
                     } 
                  else 
                     {
-                     // handle data from a client
+                     // Пришли даннае от клиента
+                     
+                     //Находим нужный нам сокет в списке и работаем с ним 
+                     cstat_list=bstat_list;
+                     while ((cstat_list!=NULL) && (cstat_list->socknum!=i))
+                       {
+                        cstat_list=cstat_list->nextrec;
+                       }
+                     //Если не нашли сокет в списке статусов
+                     if (cstat_list==NULL)
+                        {
+                         syslog(LOG_ERR, "Socket %d not in list. This is programm error, please contact with developer.", i);
+                         exit(1);
+                        }
                                          
+                     
                      if ((nbytes = recv(i, buf, sizeof(buf)-1, 0)) <= 0)
                         {
                          // got error or connection closed by client
                          if (nbytes == 0) 
                             {
-                             if (log_verbose>1)
-                                {
-                                 syslog(LOG_DEBUG, "Close query on socket %d", i);
-                                }
+                             if (log_verbose>1) syslog(LOG_DEBUG, "Close query on socket %d", i);
                             } 
                          else 
                             {
-                             syslog(LOG_ERR, "Receive error from %s on socket %d", inet_ntoa(status_array[i]->clentaddr),i);
+                             syslog(LOG_ERR, "Receive error from %s on socket %d", inet_ntoa(cstat_list->clentaddr),i);
                             }
-
-                         set_socket_status(&status_array, i, closed, &master, NULL, 0);
+                         set_socket_closed(&cstat_list, &bstat_list, &estat_list, &master);
                         } 
+
                      else 
                         {
                          
                          
                         //Сокет открыт, пришел логин-пароль
-                         if (status_array[i]->status==opened && strchr(&buf[0], '@')>0)
+                         if (cstat_list->status==opened && strchr(&buf[0], '@')>0)
                             {
 
                              //Запрос корректный, парсим переменные
@@ -484,14 +524,14 @@ int main(void)
                                      syslog(LOG_DEBUG, "Userpass var: \"%s\"", buf);
                                     }
   
-                                 pass = calloc(1, strlen(strchr(&buf[0], '@')));
+                                 pass = calloc(strlen(strchr(&buf[0], '@')), sizeof(char));
                                  if(!pass) 
                                    { 
                                      syslog(LOG_ERR, "Password variable allocation error");
                                    }
                                  strncpy(pass, strchr(&buf[0], '@')+1, strlen(strchr(&buf[0], '@')));
                                  
-                                 user = calloc(1,strlen(&buf[0])-strlen(strchr(&buf[0], '@'))+1);
+                                 user = calloc(strlen(&buf[0])-strlen(strchr(&buf[0], '@'))+1, sizeof(char));
                                  if(!user) { 
                                     syslog(LOG_ERR, "User variable allocation error");      
                                  }
@@ -503,25 +543,25 @@ int main(void)
                                     syslog(LOG_DEBUG, "User: \"%s\", Password: \"%s\"", user, pass);
                                     }
                                   
-                                 switch(check_login(user, pass, &accesslevel, &i, &(status_array[i]->clentaddr), authsrvs, &authcnt))
+                                 switch(check_login(user, pass, &accesslevel, &i, &(cstat_list->clentaddr), authsrvs, &authcnt))
                                        {
                                         case AUTH_ACCEPT:
                                              send(i, "ACCEPT", 6, 0);
-                                             set_socket_status(&status_array, i, authed, &master, user, accesslevel);
-                                             if (log_verbose>0) syslog(LOG_INFO, "User \"%s\" from %s on socket %d accepted with level %d", user, inet_ntoa(status_array[i]->clentaddr), i, accesslevel);
+                                             set_socket_authed(&cstat_list, user, accesslevel);
+                                             if (log_verbose>0) syslog(LOG_INFO, "User \"%s\" from %s on socket %d accepted with level %d", user, inet_ntoa(cstat_list->clentaddr), i, accesslevel);
                                              break;
                                         case AUTH_REJECT:
                                              send(i, "REJECT", 6, 0);
-                                             if (log_verbose>0) syslog(LOG_INFO, "User \"%s\" from %s on socket %d rejected", user, inet_ntoa(status_array[i]->clentaddr), i);
-                                             set_socket_status(&status_array, i, closed, &master, NULL, 0);
+                                             if (log_verbose>0) syslog(LOG_INFO, "User \"%s\" from %s on socket %d rejected", user, inet_ntoa(cstat_list->clentaddr), i);
+                                             set_socket_closed(&cstat_list, &bstat_list, &estat_list, &master);
                                              break;
                                         case AUTH_NORESPONSE:
                                              send(i, "NORESPONSE", 10, 0);
-                                             if (log_verbose>0) syslog(LOG_INFO, "Radius server did not response to user from %s on socket %d make quiery",inet_ntoa(status_array[i]->clentaddr), i);
-                                             set_socket_status(&status_array, i, closed, &master, NULL, 0);
+                                             if (log_verbose>0) syslog(LOG_INFO, "Radius server did not response to user from %s on socket %d make quiery",inet_ntoa(cstat_list->clentaddr), i);
+                                             set_socket_closed(&cstat_list, &bstat_list, &estat_list, &master);
                                              break;
                                         default:
-                                             set_socket_status(&status_array, i, closed, &master, NULL, 0);
+                                             set_socket_closed(&cstat_list, &bstat_list, &estat_list, &master);
                                              if (log_verbose>0) syslog(LOG_ERR, "Invalid plugin work");
                                              break;                                             
                                        }
@@ -539,18 +579,18 @@ int main(void)
                          
                          
                         //Сокет аутентифицирован, пришло сообщение об активности
-                         else if ((status_array[i]->status==authed) && !strcmp(buf, "ALIVE"))
+                         else if ((cstat_list->status==authed) && !strcmp(buf, "ALIVE"))
                             {
-                             if (difftime(time((time_t *)NULL), status_array[i]->last_ans)<floodtimer)
+                             if (difftime(time((time_t *)NULL), cstat_list->last_ans)<floodtimer)
                                 {
-                                 if (log_verbose>0) syslog(LOG_INFO, "User \"%s\" from %s on socket %d makes flood", status_array[i]->sockuser, inet_ntoa(status_array[i]->clentaddr), i);
+                                 if (log_verbose>0) syslog(LOG_INFO, "User \"%s\" from %s on socket %d makes flood", cstat_list->sockuser, inet_ntoa(cstat_list->clentaddr), i);
                                  send(i, "FLOOD", 5, 0);
-                                 set_socket_status(&status_array, i, closed, &master, NULL, 0);
+                                 set_socket_closed(&cstat_list, &bstat_list, &estat_list, &master);
                                 }
                              else
                                 {
-                                 update_socket_status(&status_array, i);
-                                 if (log_verbose>2) syslog(LOG_DEBUG, "User \"%s\" from %s on socket %d sends ALIVE message", status_array[i]->sockuser, inet_ntoa(status_array[i]->clentaddr), i);
+                                 update_socket_status(&cstat_list);
+                                 if (log_verbose>2) syslog(LOG_DEBUG, "User \"%s\" from %s on socket %d sends ALIVE message", cstat_list->sockuser, inet_ntoa(cstat_list->clentaddr), i);
                                 }
                             }
                             
@@ -559,8 +599,8 @@ int main(void)
                          else
                             {
                              send(i, "INVALID", 7, 0);
-                             if (log_verbose>0) syslog(LOG_INFO, "Invalid query from %s on socket %d",inet_ntoa(status_array[i]->clentaddr), i);
-                             set_socket_status(&status_array, i, closed, &master, NULL, 0);
+                             if (log_verbose>0) syslog(LOG_INFO, "Invalid query from %s on socket %d",inet_ntoa(cstat_list->clentaddr), i);
+                             set_socket_closed(&cstat_list, &bstat_list, &estat_list, &master);
                             }
                          
                         }
@@ -571,6 +611,18 @@ int main(void)
         }//end selectstatus check
     } // End main loop
 
+ 
+ 
+ for(k = 0; k < authcnt; k++)
+    {
+     free(authsrvs[k].authhost);
+     free(authsrvs[k].authsecret);
+    }
+ free(bindaddr);
+ free(startscript);
+ free(stopscript);
+ free(authplugin);
+ free(authsrvs);
  closelog();
  dlclose(plg_handle);
  return 0;
