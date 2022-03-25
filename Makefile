@@ -1,8 +1,8 @@
-default: authgwd.c radlib.c md5.c
-	gcc authgwd.c radlib.c md5.c -o authgwd -Wall -Wl,-lconfuse
-
-debug: authgwd.c radlib.c md5.c
-	gcc -g authgwd.c radlib.c md5.c -o authgwd -Wall -Wl,-lconfuse
+default: authgwd.c
+	gcc authgwd.c -o authgwd -Wall -Wl,-lconfuse,-ldl
+	
+debug: authgwd.c
+	gcc -g authgwd.c -o authgwd -Wall -Wl,-lconfuse,-ldl
 	
 clean:
 	rm authgwd

@@ -2,14 +2,6 @@
 /**************************************************************************************************
 * Определяем свои типы
 **************************************************************************************************/
-typedef struct struct_radserver
-{
-  char * radhost;
-  int    radport;
-  char * radsecret;
-  int    radtries;
-  int    radtimeout;
-} radserver;
 
 
 typedef enum stat_enum
@@ -27,6 +19,7 @@ typedef struct sock_stat_struc
                 char * sockuser;
                 statenum status;
                 struct in_addr clentaddr;
+                int accesslvl;
                } 
         sockstat;
 
@@ -35,4 +28,7 @@ typedef sockstat * psockstat;
 /**************************************************************************************************
 * Конец Определяем свои типы
 **************************************************************************************************/
-int set_socket_status (psockstat *, int, statenum, fd_set *, char *);
+void daemonize(void);
+void update_socket_status (psockstat *, int);
+int set_socket_status (psockstat *, int, statenum, fd_set *, char *, int);
+int main(void);

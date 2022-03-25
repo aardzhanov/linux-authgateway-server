@@ -11,30 +11,30 @@
 #include <syslog.h>
 #include <confuse.h>
 #include <time.h>
-
-#include "radlib.h"
-#include "radlib_private.h"
+#include <dlfcn.h>
 #include "authgwd.h"
-
+#include "authserver.h"
 
 
 /**************************************************************************************************
 * Определяем глобальные переменные
 **************************************************************************************************/
-int log_verbose=2;                  // 0 - silent, 1 - normal, 2 - debug
-int port = 9034;
-int timer = 100;
-int stoptimeout=200;
-int selecttime=100;
-char *bindaddr = NULL;
-char *startscript = NULL;           //скрипт выполняемый при успешной аутентификации сокета
-char *stopscript = NULL;            //скрипт выполняемый при разрыве сокета
-int var_keepalive=1;
-int var_keepidle=10;
-int var_keepcnt=2;
-int var_keepinvl=5;
-radserver * radsrvs;
-int radcnt;
+int             log_verbose      = 3;              // 0 - silent, 1 - normal, 2 - verbose, 3 - debug
+int             port             = 9034;
+int             timer            = 100;
+int             stoptimeout      = 200;
+int             selecttime       = 100;
+int             floodtimer       = 20;
+char *          bindaddr         = NULL;
+char *          startscript      = NULL;           //скрипт выполняемый при успешной аутентификации сокета
+char *          stopscript       = NULL;           //скрипт выполняемый при разрыве сокета
+char *          authplugin       = NULL;           //Плагин аутентификации
+int             var_keepalive    = 1;
+int             var_keepidle     = 10;
+int             var_keepcnt      = 2;
+int             var_keepinvl     = 5;
+authserver *    authsrvs;
+int             authcnt;
 /**************************************************************************************************
 * Конец Определяем глобальные переменные
 **************************************************************************************************/
@@ -93,103 +93,14 @@ void daemonize(void)
 
 
 
-/**************************************************************************************************
-* Функция проверки логина
-**************************************************************************************************/
 
-int checklogin(char * authrec, int sockdescr, psockstat * arr_st, fd_set * mysockfd){
-
- char * user;
- char * pass;
- int i;
-
-
-  if (strchr(authrec, '@')<=0)
-     {
-      send(sockdescr, "INVALID", 7, 0);
-      if (log_verbose>0) syslog(LOG_INFO, "User from %s on socket %d make invalid quiery", inet_ntoa((*arr_st)[sockdescr].clentaddr), sockdescr);
-      set_socket_status(arr_st, sockdescr, closed, mysockfd, NULL);
-      return -1;
-     }
-  
-  if (log_verbose>1) 
-	 {
-    syslog(LOG_DEBUG, "Userpass var: \"%s\"", authrec);
-   }
-  
-  //parsing variables
-  
-  pass = calloc(1, strlen(strchr(authrec, '@')));
-  if(!pass) 
-    { 
-      syslog(LOG_ERR, "Password variable allocation error");
-    }
-  strncpy(pass, strchr(authrec, '@')+1, strlen(strchr(authrec, '@')));
-  
-  user = calloc(1,strlen(authrec)-strlen(strchr(authrec, '@'))+1);
-  if(!user) { 
-     syslog(LOG_ERR, "User variable allocation error");      
-  }
-  
-  
-  strncpy(user, authrec, strlen(authrec)-strlen(strchr(authrec, '@')));
-  
-  if (log_verbose>1) 
-     {
-     syslog(LOG_DEBUG, "User: \"%s\", Password: \"%s\"", user, pass);
-     }
-  //end parsing variables
-
-  //Sending request on radius server
-  struct rad_handle * radreq = rad_auth_open();
-  for(i=0; i<radcnt; i++)
-     {
-      rad_add_server(radreq, radsrvs[i].radhost, radsrvs[i].radport, radsrvs[i].radsecret, radsrvs[i].radtimeout, radsrvs[i].radtries);
-     }
-  rad_create_request(radreq, RAD_ACCESS_REQUEST);
-  rad_put_string(radreq, RAD_USER_NAME, user);
-  rad_put_string(radreq, RAD_USER_PASSWORD, pass);
-  switch(rad_send_request(radreq))
-        {
-        case RAD_ACCESS_ACCEPT:
-             send(sockdescr, "ACCEPT", 6, 0);
-             set_socket_status(arr_st, sockdescr, authed, mysockfd, user);
-             if (log_verbose>0) syslog(LOG_INFO, "User \"%s\" from %s on socket %d accepted", user, inet_ntoa((*arr_st)[sockdescr].clentaddr), sockdescr);
-             memset(user, '\0', strlen(user));
-             memset(pass, '\0', strlen(pass));
-             free(user);
-             free(pass);
-             break;
-        case RAD_ACCESS_REJECT:
-             send(sockdescr, "REJECT", 6, 0);
-             if (log_verbose>0) syslog(LOG_INFO, "User \"%s\" from %s on socket %d rejected", user, inet_ntoa((*arr_st)[sockdescr].clentaddr), sockdescr);
-             set_socket_status(arr_st, sockdescr, closed, mysockfd, NULL);
-             free(user);
-             free(pass);
-             break;
-        default:
-             send(sockdescr, "NORESPONSE", 10, 0);
-             if (log_verbose>0) syslog(LOG_INFO, "Radius server did not response to user from %s on socket %d make quiery",inet_ntoa((*arr_st)[sockdescr].clentaddr), sockdescr);
-             set_socket_status(arr_st, sockdescr, closed, mysockfd, NULL);
-             break;
-        }
- rad_close(radreq);
- return 0;                    
-  
-
-}
-
-
-/**************************************************************************************************
-* Конец Функции проверки логина
-**************************************************************************************************/
 
 
 
 /**************************************************************************************************
 * Функция установки статуса на сокет
 **************************************************************************************************/
-int set_socket_status (psockstat * arr_st, int sockdescr, statenum mystatus, fd_set * mysockfd, char * user)
+int set_socket_status (psockstat * arr_st, int sockdescr, statenum mystatus, fd_set * mysockfd, char * user, int acclvl)
 {
  char * dynrule;
  struct linger sclsmethod;
@@ -213,10 +124,10 @@ int set_socket_status (psockstat * arr_st, int sockdescr, statenum mystatus, fd_
                    syslog(LOG_ERR, "Command variable allocation error");
                   }
                 memset(dynrule, '\0', 250);
-                sprintf(dynrule, "%s %s %i %s", stopscript, inet_ntoa((*arr_st)[sockdescr].clentaddr), sockdescr, (*arr_st)[sockdescr].sockuser);
+                sprintf(dynrule, "%s %s %i %s %i", stopscript, inet_ntoa((*arr_st)[sockdescr].clentaddr), sockdescr, (*arr_st)[sockdescr].sockuser, (*arr_st)[sockdescr].accesslvl);
                 system(dynrule);
                 free(dynrule);
-                if (log_verbose>0) syslog(LOG_DEBUG, "User %s from %s on socket %d close connection with status %d", (*arr_st)[sockdescr].sockuser, inet_ntoa((*arr_st)[sockdescr].clentaddr), sockdescr, clsstat);
+                if (log_verbose>0) syslog(LOG_DEBUG, "User %s from %s on socket %d with level %d close connection with status %d", (*arr_st)[sockdescr].sockuser, inet_ntoa((*arr_st)[sockdescr].clentaddr), sockdescr, (*arr_st)[sockdescr].accesslvl,clsstat);
                 free((*arr_st)[sockdescr].sockuser);
                }
             else
@@ -225,6 +136,7 @@ int set_socket_status (psockstat * arr_st, int sockdescr, statenum mystatus, fd_
                }
             (*arr_st)[sockdescr].status=closed;
             (*arr_st)[sockdescr].clentaddr.s_addr=0;
+            (*arr_st)[sockdescr].accesslvl=0;
             break;
        case opened:
             (*arr_st)[sockdescr].status=mystatus;
@@ -240,13 +152,14 @@ int set_socket_status (psockstat * arr_st, int sockdescr, statenum mystatus, fd_
                syslog(LOG_ERR, "Command variable allocation error");
               }
             memset(dynrule, '\0', 250);
-            sprintf(dynrule, "%s %s %i %s", startscript, inet_ntoa((*arr_st)[sockdescr].clentaddr), sockdescr, user);
+            sprintf(dynrule, "%s %s %i %s %i", startscript, inet_ntoa((*arr_st)[sockdescr].clentaddr), sockdescr, user, acclvl);
             system(dynrule);
             free(dynrule);
             (*arr_st)[sockdescr].sockuser=calloc(1, strlen(user)+1);
             strncpy((*arr_st)[sockdescr].sockuser, user, strlen(user));
             (*arr_st)[sockdescr].status=mystatus;
             (*arr_st)[sockdescr].last_ans=time((time_t *)NULL);
+            (*arr_st)[sockdescr].accesslvl=acclvl;
             break;
        case listened:
             (*arr_st)[sockdescr].status=mystatus;
@@ -282,33 +195,36 @@ void update_socket_status (psockstat * arr_st, int sockdescr)
 
 int main(void)
 {
- fd_set master;                     // master file descriptor list
- fd_set read_fds;                   // temp file descriptor list for select()
- struct sockaddr_in myaddr;         // server address
- struct sockaddr_in remoteaddr;     // client address
- int fdmax;                         // maximum file descriptor number
- int listener;                      // listening socket descriptor
- int newfd;                         // newly accept()ed socket descriptor
- char buf[256];                     // buffer for client data
- int nbytes;                        // кол-во считанных байт из сокета
- int yes=1;                         // for setsockopt() SO_REUSEADDR, below
- socklen_t addrlen;                 
- int i, k;                          // Переменная для цикла обхода сокетов
- psockstat status_array;            // Ссылка на массив состояний сокета
- int currsock=0;
- struct timeval tv;
- int selectstatus;
-
-
+ fd_set                    master;                                // master file descriptor list
+ fd_set                    read_fds;                              // temp file descriptor list for select()
+ struct sockaddr_in        myaddr;                                // server address
+ struct sockaddr_in        remoteaddr;                            // client address
+ int                       fdmax;                                 // maximum file descriptor number
+ int                       listener;                              // listening socket descriptor
+ int                       newfd;                                 // newly accept()ed socket descriptor
+ char                      buf[256];                              // buffer for client data
+ int                       nbytes;                                // кол-во считанных байт из сокета
+ int                       yes=1;                                 // for setsockopt() SO_REUSEADDR, below
+ socklen_t                 addrlen;                               
+ int                       i;                                     
+ int                       k;                                     // Переменная для цикла обхода сокетов
+ psockstat                 status_array;                          // Ссылка на массив состояний сокета
+ int                       currsock             = 0;
+ struct timeval            tv;
+ int                       selectstatus;
+ char *                    user;                                  //Переменная, хранящая имя пользователя
+ char *                    pass;                                  //Переменная, хранящая пароль
+ int                       accesslevel;                           //Переменная, хранящая уровень доступа
+ void *                    plg_handle;                                //Ссылка на плагин
 
  // Read config file
  cfg_opt_t server_opts[] =
     {
-     CFG_STR("radhost", "127.0.0.1", CFGF_NONE),
-     CFG_INT("radport", 1645, CFGF_NONE),
-     CFG_STR("radsecret", "secret", CFGF_NONE),
-     CFG_INT("radtries", 3, CFGF_NONE),
-     CFG_INT("radtimeout", 1, CFGF_NONE),
+     CFG_STR("authhost", "127.0.0.1", CFGF_NONE),
+     CFG_INT("authport", 1645, CFGF_NONE),
+     CFG_STR("authsecret", "secret", CFGF_NONE),
+     CFG_INT("authtries", 3, CFGF_NONE),
+     CFG_INT("authtimeout", 1, CFGF_NONE),
      CFG_END()
     };
 
@@ -317,6 +233,7 @@ int main(void)
      CFG_SIMPLE_INT("port", &port),
      CFG_SIMPLE_INT("timer", &timer),
      CFG_SIMPLE_INT("stoptimeout", &stoptimeout),
+     CFG_SIMPLE_INT("floodtimer", &floodtimer),
      CFG_SIMPLE_INT("keepalive", &var_keepalive),
      CFG_SIMPLE_INT("keepidle", &var_keepidle),
      CFG_SIMPLE_INT("keepcnt", &var_keepcnt),
@@ -325,6 +242,7 @@ int main(void)
      CFG_SIMPLE_STR("bindaddr", &bindaddr),
      CFG_SIMPLE_STR("startscript", &startscript),
      CFG_SIMPLE_STR("stopscript", &stopscript),
+     CFG_SIMPLE_STR("authplugin", &authplugin),
      CFG_SEC("server", server_opts, CFGF_TITLE | CFGF_MULTI),
      CFG_END()
      };
@@ -333,23 +251,23 @@ int main(void)
  cfg = cfg_init(opts, 0);
  cfg_parse(cfg, "authgwd.conf");
  //Выделяем память под хранения настроек северов
- radcnt=cfg_size(cfg, "server");
- radsrvs=calloc(radcnt, sizeof(radserver));
- if (!radsrvs)
+ authcnt=cfg_size(cfg, "server");
+ authsrvs=calloc(authcnt, sizeof(authserver));
+ if (!authsrvs)
     {
      syslog(LOG_ERR, "Can not allocate memory for radius servers array");
      exit(1);
     }
- for(k = 0; k < radcnt; k++)
+ for(k = 0; k < authcnt; k++)
     {
     cfg_server = cfg_getnsec(cfg, "server", k);
-    radsrvs[k].radhost=calloc(1, strlen(cfg_getstr(cfg_server, "radhost"))+1);
-    strcpy(radsrvs[k].radhost, cfg_getstr(cfg_server, "radhost"));
-    radsrvs[k].radport = cfg_getint(cfg_server, "radport");
-    radsrvs[k].radsecret=calloc(1, strlen(cfg_getstr(cfg_server, "radsecret"))+1);
-    strcpy(radsrvs[k].radsecret, cfg_getstr(cfg_server, "radsecret"));
-    radsrvs[k].radtries = cfg_getint(cfg_server, "radtries");
-    radsrvs[k].radtimeout = cfg_getint(cfg_server, "radtimeout");
+    authsrvs[k].authhost=calloc(1, strlen(cfg_getstr(cfg_server, "authhost"))+1);
+    strcpy(authsrvs[k].authhost, cfg_getstr(cfg_server, "authhost"));
+    authsrvs[k].authport = cfg_getint(cfg_server, "authport");
+    authsrvs[k].authsecret=calloc(1, strlen(cfg_getstr(cfg_server, "authsecret"))+1);
+    strcpy(authsrvs[k].authsecret, cfg_getstr(cfg_server, "authsecret"));
+    authsrvs[k].authtries = cfg_getint(cfg_server, "authtries");
+    authsrvs[k].authtimeout = cfg_getint(cfg_server, "authtimeout");
     }
 
  cfg_free(cfg);
@@ -365,6 +283,24 @@ int main(void)
 
 
  daemonize();
+ 
+ //Загружаем плагин работы с сервером аутентификации
+ int (*check_login)(const char *, const char *, int *, const int *, const struct in_addr *, const authserver *, const int *);
+ plg_handle = dlopen (authplugin, RTLD_LAZY);
+ if (!plg_handle) 
+    {
+     syslog(LOG_ERR, "Can not load plugin");
+     exit(1);
+    }
+ check_login = dlsym(plg_handle, "checklogin");
+ if(dlerror() != NULL) 
+   {
+    dlclose(plg_handle);
+    exit(1);
+   }
+
+
+ 
 
  FD_ZERO(&master);    // clear the master and temp sets
  FD_ZERO(&read_fds);
@@ -425,9 +361,10 @@ int main(void)
       status_array[k].status=closed;
       status_array[k].last_ans=time((time_t *)NULL);
       status_array[k].clentaddr.s_addr=0;
+      status_array[k].accesslvl=0;
      } 
 
- set_socket_status(&status_array, listener, listened, &master, NULL);
+ set_socket_status(&status_array, listener, listened, &master, NULL, 0);
  
  for(;;) 
     { // main loop
@@ -441,7 +378,7 @@ int main(void)
   
   if ( (difftime(time((time_t *)NULL), status_array[currsock].last_ans)>stoptimeout) && ((status_array[currsock].status==opened) || (status_array[currsock].status==authed)))
       {
-       set_socket_status(&status_array, currsock, closed, &master, NULL);
+       set_socket_status(&status_array, currsock, closed, &master, NULL, 0);
       }
   
   if (fdmax<=currsock)
@@ -490,11 +427,12 @@ int main(void)
                                    status_array[k].status=closed;
                                    status_array[k].last_ans=time((time_t *)NULL);
                                    status_array[k].clentaddr.s_addr=0;
+                                   status_array[k].accesslvl=0;
                                   }                          
                               fdmax = newfd;
                              }
                           //добавляем сокет в массив состояний
-                          set_socket_status(&status_array, newfd, opened, &master, NULL);
+                          set_socket_status(&status_array, newfd, opened, &master, NULL, 0);
                           setsockopt(newfd, SOL_SOCKET, SO_KEEPALIVE, &var_keepalive, sizeof(int));
                           setsockopt(newfd, SOL_TCP, TCP_KEEPIDLE, &var_keepidle, sizeof(int));
                           setsockopt(newfd, SOL_TCP, TCP_KEEPINTVL, &var_keepinvl, sizeof(int));
@@ -529,23 +467,101 @@ int main(void)
                              syslog(LOG_ERR, "Receive error from %s on socket %d", inet_ntoa(status_array[i].clentaddr),i);
                             }
 
-                         set_socket_status(&status_array, i, closed, &master, NULL);
+                         set_socket_status(&status_array, i, closed, &master, NULL, 0);
                         } 
                      else 
                         {
-                        
-                         if (status_array[i].status==opened)
+                         
+                         
+                        //Сокет открыт, пришел логин-пароль
+                         if (status_array[i].status==opened && strchr(&buf[0], '@')>0)
                             {
-                             checklogin(&buf[0], i, &status_array, &master);
-                            }
+
+                             //Запрос корректный, парсим переменные
+                                
+                                 //Если включена отладка пишем в лог файл   
+                                 if (log_verbose>1) 
+	                                  {
+                                     syslog(LOG_DEBUG, "Userpass var: \"%s\"", buf);
+                                    }
+  
+                                 pass = calloc(1, strlen(strchr(&buf[0], '@')));
+                                 if(!pass) 
+                                   { 
+                                     syslog(LOG_ERR, "Password variable allocation error");
+                                   }
+                                 strncpy(pass, strchr(&buf[0], '@')+1, strlen(strchr(&buf[0], '@')));
+                                 
+                                 user = calloc(1,strlen(&buf[0])-strlen(strchr(&buf[0], '@'))+1);
+                                 if(!user) { 
+                                    syslog(LOG_ERR, "User variable allocation error");      
+                                 }
+                                 
+                                 strncpy(user, &buf[0], strlen(&buf[0])-strlen(strchr(&buf[0], '@')));
+                                 
+                                 if (log_verbose>1) 
+                                    {
+                                    syslog(LOG_DEBUG, "User: \"%s\", Password: \"%s\"", user, pass);
+                                    }
+                                  
+                                 switch(check_login(user, pass, &accesslevel, &i, &(status_array[i].clentaddr), authsrvs, &authcnt))
+                                       {
+                                        case AUTH_ACCEPT:
+                                             send(i, "ACCEPT", 6, 0);
+                                             set_socket_status(&status_array, i, authed, &master, user, accesslevel);
+                                             if (log_verbose>0) syslog(LOG_INFO, "User \"%s\" from %s on socket %d accepted with level %d", user, inet_ntoa(status_array[i].clentaddr), i, accesslevel);
+                                             break;
+                                        case AUTH_REJECT:
+                                             send(i, "REJECT", 6, 0);
+                                             if (log_verbose>0) syslog(LOG_INFO, "User \"%s\" from %s on socket %d rejected", user, inet_ntoa(status_array[i].clentaddr), i);
+                                             set_socket_status(&status_array, i, closed, &master, NULL, 0);
+                                             break;
+                                        case AUTH_NORESPONSE:
+                                             send(i, "NORESPONSE", 10, 0);
+                                             if (log_verbose>0) syslog(LOG_INFO, "Radius server did not response to user from %s on socket %d make quiery",inet_ntoa(status_array[i].clentaddr), i);
+                                             set_socket_status(&status_array, i, closed, &master, NULL, 0);
+                                             break;
+                                        default:
+                                             set_socket_status(&status_array, i, closed, &master, NULL, 0);
+                                             if (log_verbose>0) syslog(LOG_ERR, "Invalid plugin work");
+                                             break;                                             
+                                       }
+                                 memset(user, '\0', strlen(user));
+                                 memset(pass, '\0', strlen(pass));
+                                 free(user);
+                                 free(pass);                       
+                                
+                                }
+                            
+                            
+                            
+                            
+                         
+                         
+                         
+                        //Сокет аутентифицирован, пришло сообщение об активности
                          else if ((status_array[i].status==authed) && !strcmp(buf, "ALIVE"))
                             {
-                             update_socket_status(&status_array, i);
+                             if (difftime(time((time_t *)NULL), status_array[i].last_ans)<floodtimer)
+                                {
+                                 if (log_verbose>0) syslog(LOG_INFO, "User \"%s\" from %s on socket %d makes flood", status_array[i].sockuser, inet_ntoa(status_array[i].clentaddr), i);
+                                 send(i, "FLOOD", 5, 0);
+                                 set_socket_status(&status_array, i, closed, &master, NULL, 0);
+                                }
+                             else
+                                {
+                                 update_socket_status(&status_array, i);
+                                 if (log_verbose>2) syslog(LOG_DEBUG, "User \"%s\" from %s on socket %d sends ALIVE message", status_array[i].sockuser, inet_ntoa(status_array[i].clentaddr), i);
+                                }
                             }
+                            
+                            
+                        //В любом другом случае отвечаем о некорректности и закрываем сокет
                          else
                             {
-                             send(i, "INCORRECTMSG", 12, 0);
-                             set_socket_status(&status_array, i, closed, &master, NULL);
+                             send(i, "INVALID", 7, 0);
+                             if (log_verbose>0) syslog(LOG_INFO, "Invalid query from %s on socket %d",inet_ntoa(status_array[i].clentaddr), i);
+                             set_socket_status(&status_array, i, closed, &master, NULL, 0);
                             }
                          
                         }
@@ -557,5 +573,6 @@ int main(void)
     } // End main loop
 
  closelog();
+ dlclose(plg_handle);
  return 0;
 }

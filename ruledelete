@@ -1,3 +1,5 @@
 #!/bin/bash
-iptables -D DYNRULE -p all -s $1 -m comment --comment "socket: $2, user: $3" -j ACCEPT
-iptables -D vlan0655_In_RULE_0 -s $1 -m comment --comment "socket: $2, user: $3" -j DROP
+#iptables -D DYNRULE -p all -s $1 -m comment --comment "socket: $2, user: $3" -j ACCEPT
+#iptables -D vlan0655_In_RULE_0 -s $1 -m comment --comment "socket: $2, user: $3" -j DROP
+
+echo $1 $2 $3 $4 >> ./stop.log
