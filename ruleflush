@@ -1,0 +1,8 @@
+#!/bin/bash
+
+echo "Flushing DYNRULE"
+iptables -F DYNRULE
+echo "Flushing vlan0655_In_RULE_0"
+iptables -F vlan0655_In_RULE_0
+iptables -A vlan0655_In_RULE_0   -j LOG  --log-level 7 --log-prefix "RULE 0 - vlan0655- ACCEPT " --log-tcp-sequence  --log-tcp-options  --log-ip-options 
+iptables -A vlan0655_In_RULE_0   -j ACCEPT 
